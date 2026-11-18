@@ -1,0 +1,145 @@
+package com.opentune.ui.player
+
+import android.content.Context
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.AtomicFile
+import com.opentune.data.lyrics.Lyrics
+import java.io.File
+import java.security.KeyStore
+import java.util.concurrent.TimeUnit
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+
+/** Only fixed, sanitized messages may cross into the UI. Never expose server bodies or exceptions. */
+internal class TranslationFailure(val userMessage: String) : Exception(userMessage)
+
+internal class GeminiLyricsStore(context: Context) {
+    private val root = File(context.noBackupFilesDir, "gemini-lyrics").apply { mkdirs() }
+    private val secret = File(root, "key.enc")
+    private val modelFile = File(root, "model.txt")
+    private val cache = File(root, "translations").apply { mkdirs() }
+    fun hasKey() = secret.exists()
+    fun model() = runCatching { modelFile.readText() }.getOrDefault(LyricsTranslation.DEFAULT_MODEL)
+
+    private fun key(): SecretKey {
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        return (store.getKey(ALIAS, null) as? SecretKey) ?: KeyGenerator.getInstance("AES", "AndroidKeyStore").apply {
+            init(KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
+        }.generateKey()
+    }
+
+    fun save(apiKey: String, model: String) {
+        require(model.matches(Regex("[a-zA-Z0-9._-]{1,100}")))
+        if (apiKey.isNotBlank()) {
+            require(apiKey.trim().all { it.code in 33..126 })
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, key())
+            atomicWrite(secret, cipher.iv + cipher.doFinal(apiKey.trim().toByteArray(Charsets.UTF_8)))
+        }
+        atomicWrite(modelFile, model.toByteArray(Charsets.UTF_8))
+    }
+
+    fun deleteKey() { AtomicFile(secret).delete() }
+    fun clearCache() { cache.listFiles()?.forEach { it.delete() } }
+    private fun readKey(): String {
+        if (!hasKey()) throw TranslationFailure("Configura tu clave de Gemini para traducir.")
+        try {
+            val bytes = AtomicFile(secret).readFully()
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
+            return String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
+        } catch (_: Exception) {
+            throw TranslationFailure("No se pudo abrir la clave guardada. Bórrala y configúrala de nuevo.")
+        }
+    }
+
+    suspend fun cached(lyrics: Lyrics, model: String): List<String>? = withContext(Dispatchers.IO) {
+        runCatching {
+            val file = File(cache, LyricsTranslation.cacheKey(lyrics, model) + ".json")
+            require(file.length() <= MAX_RESPONSE)
+            LyricsTranslation.decode(file.readText(), LyricsTranslation.texts(lyrics))
+        }.getOrNull()
+    }
+
+    suspend fun translate(lyrics: Lyrics, model: String): List<String> = withContext(Dispatchers.IO) {
+        cached(lyrics, model)?.let { return@withContext it }
+        val lines = LyricsTranslation.texts(lyrics)
+        if (lines.size > 500 || lines.sumOf { it.length } > 30000) {
+            throw TranslationFailure("Esta letra es demasiado larga para traducirla en una consulta.")
+        }
+        require(model.matches(Regex("[a-zA-Z0-9._-]{1,100}")))
+        val request = Request.Builder()
+            .url("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
+            .header("x-goog-api-key", readKey())
+            .post(LyricsTranslation.request(lines).toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        val call = client.newCall(request)
+        // Cancels the socket when this lyrics view leaves composition or the song changes.
+        kotlinx.coroutines.suspendCancellableCoroutine<List<String>> { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                    continuation.resumeWith(Result.failure(TranslationFailure("No se pudo conectar con Gemini. Inténtalo de nuevo.")))
+                }
+                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                    val result = runCatching {
+                        response.use {
+                            if (!it.isSuccessful) throw TranslationFailure(when (it.code) {
+                                400 -> "Gemini rechazó la solicitud. Revisa la clave y el modelo."
+                                401, 403 -> "Gemini no autorizó la clave o sus permisos."
+                                404 -> "El modelo no está disponible. Cámbialo en la configuración."
+                                429 -> "Se alcanzó la cuota o el límite de solicitudes de Gemini. Inténtalo más tarde."
+                                else -> "Gemini no pudo completar la traducción. Inténtalo de nuevo."
+                            })
+                            val body = it.body ?: error("empty")
+                            val source = body.source()
+                            require(!source.request((MAX_RESPONSE + 1).toLong()))
+                            val bytes = source.readByteArray()
+                            LyricsTranslation.response(String(bytes, Charsets.UTF_8), lines)
+                        }
+                    }.recoverCatching { e ->
+                        throw (e as? TranslationFailure ?: TranslationFailure("Gemini devolvió una traducción incompleta o inválida. No se guardó."))
+                    }
+                    continuation.resumeWith(result)
+                }
+            })
+        }.also { translated: List<String> ->
+            ensureActive()
+            val payload = buildJsonArray { translated.forEachIndexed { i, text -> add(buildJsonObject {
+                put("id", i); put("text", text)
+            }) } }.toString()
+            // A full disk must not discard a successful translation.
+            runCatching {
+                atomicWrite(File(cache, LyricsTranslation.cacheKey(lyrics, model) + ".json"), payload.toByteArray(Charsets.UTF_8))
+                cache.listFiles()?.sortedByDescending { it.lastModified() }?.drop(100)?.forEach { it.delete() }
+            }
+        }
+    }
+
+    companion object {
+        private const val ALIAS = "opentune.gemini.lyrics.v1"
+        private const val MAX_RESPONSE = 1_000_000
+        private val client = OkHttpClient.Builder().callTimeout(60, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
+            .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build()
+
+        private fun atomicWrite(file: File, bytes: ByteArray) {
+            val atomic = AtomicFile(file)
+            val stream = atomic.startWrite()
+            try { stream.write(bytes); atomic.finishWrite(stream) }
+            catch (e: Exception) { atomic.failWrite(stream); throw e }
+        }
+    }
+}

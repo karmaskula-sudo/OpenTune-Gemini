@@ -122,7 +122,7 @@ import kotlin.math.abs
 import kotlinx.coroutines.delay
 
 @Composable
-fun LyricsView(
+internal fun LyricsContent(
     state: LyricsState,
     position: () -> Long,
     onSeek: (Long) -> Unit,

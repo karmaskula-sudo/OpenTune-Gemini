@@ -43,6 +43,10 @@ android {
     val unsignedRelease = providers.gradleProperty("unsignedRelease").map { it.toBoolean() }.getOrElse(false)
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".geminidev"
+            versionNameSuffix = "-gemini-dev"
+        }
         release {
             // Shrinking only: nothing renamed or optimized (see proguard-rules.pro),
             // because stream resolution reaches NewPipe, Rhino, Ktor and others by
