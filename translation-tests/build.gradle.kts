@@ -7,11 +7,11 @@ sourceSets {
     main {
         kotlin.srcDir("../app/src/main/java")
         kotlin.srcDir("../core/src/main/java")
-        kotlin.include("com/opentune/ui/player/LyricsTranslation.kt", "com/opentune/ui/player/GeminiLyricsStore.kt", "com/opentune/data/lyrics/Lyrics.kt")
+        kotlin.include("com/opentune/ui/player/LyricsTranslation.kt", "com/opentune/ui/player/GeminiLyricsStore.kt", "com/opentune/ui/player/GeminiResponse.kt", "com/opentune/data/lyrics/Lyrics.kt")
     }
     test {
         kotlin.srcDir("../app/src/test/java")
-        kotlin.include("com/opentune/ui/player/LyricsTranslationTest.kt")
+        kotlin.include("com/opentune/ui/player/LyricsTranslationTest.kt", "com/opentune/ui/player/GeminiResponseTest.kt")
     }
 }
 dependencies {

@@ -20,6 +20,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.opentune.data.lyrics.Lyrics
 import com.opentune.data.model.Song
 import com.opentune.ui.LyricsState
+import java.text.DateFormat
+import java.util.Date
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -61,18 +63,27 @@ internal fun LyricsView(
         var translationError by remember { mutableStateOf(false) }
         var dialog by remember { mutableStateOf(false) }
         var hasKey by remember { mutableStateOf(store.hasKey()) }
+        var serverPause by remember { mutableStateOf(store.serverPause()) }
+        val retryAt = serverPause?.retryAt ?: 0L
+        val retryReady by produceState(System.currentTimeMillis() >= retryAt, retryAt) {
+            do {
+                val remaining = retryAt - System.currentTimeMillis()
+                value = remaining <= 0L
+                if (!value) delay(remaining.coerceAtMost(30_000L))
+            } while (!value)
+        }
         fun selectMode(mode: TranslationMode) {
             store.saveDisplayMode(mode)
             preferredMode = mode
         }
-        suspend fun requestTranslation(lyrics: Lyrics, refresh: Boolean) {
+        suspend fun requestTranslation(lyrics: Lyrics, refresh: Boolean, manual: Boolean) {
             if (busy) return
             busy = true
             translationError = false
             message = null
             try {
                 val result = translateLyrics?.invoke(lyrics, model, refresh)
-                    ?: store.translate(lyrics, model, refresh)
+                    ?: store.translate(lyrics, model, refresh, manual)
                 translated = result.lines
                 if (preferredMode == TranslationMode.ORIGINAL) selectMode(TranslationMode.SPANISH)
                 message = if (result.saved) "Traducción guardada."
@@ -83,6 +94,7 @@ internal fun LyricsView(
                 translationError = true
                 message = (e as? TranslationFailure)?.userMessage ?: "No se pudo completar la traducción."
             } finally {
+                serverPause = store.serverPause()
                 busy = false
             }
         }
@@ -93,6 +105,7 @@ internal fun LyricsView(
                 preferredMode = store.displayMode()
                 automatic = store.automatic()
                 hasKey = store.hasKey()
+                serverPause = store.serverPause()
             }
         }
         LaunchedEffect(lyrics, model) {
@@ -102,16 +115,16 @@ internal fun LyricsView(
                 if (lyrics != null) translated = store.cached(lyrics, model)
             } finally { cacheLoading = false }
         }
-        val mayTranslateAutomatically = automatic && hasKey && preferredMode != TranslationMode.ORIGINAL &&
+        val mayTranslateAutomatically = automatic && hasKey && serverPause == null && preferredMode != TranslationMode.ORIGINAL &&
             lyricsVisible && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
         // Wait briefly before sending anything so flipping through tracks skips transient lyrics.
         LaunchedEffect(model, cacheLoading, mayTranslateAutomatically) {
             if (lyrics != null && mayTranslateAutomatically && !cacheLoading && translated == null) {
                 delay(750)
-                if (translated == null) requestTranslation(lyrics, refresh = false)
+                if (translated == null) requestTranslation(lyrics, refresh = false, manual = false)
             }
         }
-        val mode = if (translated == null) TranslationMode.ORIGINAL else preferredMode
+        val mode = if (translated == null || translationError || serverPause != null) TranslationMode.ORIGINAL else preferredMode
         val shown = remember(lyrics, translated, mode) {
             lyrics?.let { LyricsState.Found(LyricsTranslation.display(it, translated, mode)) } ?: visibleState
         }
@@ -120,6 +133,7 @@ internal fun LyricsView(
                 TextButton(onClick = { dialog = true }) {
                     Text(when {
                         busy -> "Traduciendo…"
+                        serverPause != null -> "Traducción · ${serverPause?.reason?.label}"
                         translationError -> "Traducción · Ver aviso"
                         else -> "Traducción · ${mode.label}"
                     })
@@ -140,10 +154,18 @@ internal fun LyricsView(
                 text = {
                     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(when {
+                            serverPause != null -> "Traducción automática en pausa. Se muestra la letra original."
                             translated != null -> "Traducción disponible en este dispositivo."
                             hasKey -> "Tu clave ya está configurada para todas las canciones. Traducir envía la letra a Google y usa tu cuota."
                             else -> "Configura tu clave de Gemini una sola vez para traducir tus canciones."
                         })
+                        serverPause?.let { pause ->
+                            Text(pause.reason.explanation, color = MaterialTheme.colorScheme.error)
+                            if (!retryReady) {
+                                val retryTime = DateFormat.getDateTimeInstance().format(Date(pause.retryAt))
+                                Text("Gemini pidió esperar hasta $retryTime.")
+                            }
+                        }
                         TranslationMode.entries.forEach { option ->
                             FilterChip(selected = preferredMode == option,
                                 enabled = !busy && (option == TranslationMode.ORIGINAL || translated != null || hasKey),
@@ -217,16 +239,23 @@ internal fun LyricsView(
                             }) { Text("Borrar caché") }
                         }
                         if (busy) CircularProgressIndicator()
-                        message?.let { Text(it) }
+                        message?.takeUnless { it == serverPause?.reason?.explanation }?.let {
+                            Text(it, color = if (translationError) MaterialTheme.colorScheme.error else LocalContentColor.current)
+                        }
                         Text("Sincronización por línea. Las voces de fondo permanecen en su idioma original.", style = MaterialTheme.typography.bodySmall)
                     }
                 },
                 confirmButton = {
-                    TextButton(enabled = !busy && !cacheLoading && hasKey && !showSettings,
+                    TextButton(enabled = !busy && !cacheLoading && hasKey && !showSettings && retryReady,
                         onClick = {
-                            val refresh = translated != null
-                            scope.launch { requestTranslation(lyrics, refresh) }
-                        }) { Text(if (busy) "Traduciendo…" else if (translated != null) "Volver a traducir" else "Traducir al español") }
+                            val refresh = translated != null || serverPause != null
+                            scope.launch { requestTranslation(lyrics, refresh, manual = true) }
+                        }) { Text(when {
+                            busy -> "Traduciendo…"
+                            serverPause != null -> "Reintentar con Gemini"
+                            translated != null -> "Volver a traducir"
+                            else -> "Traducir al español"
+                        }) }
                 },
                 dismissButton = { TextButton(onClick = { dialog = false }) { Text("Cerrar") } },
             )

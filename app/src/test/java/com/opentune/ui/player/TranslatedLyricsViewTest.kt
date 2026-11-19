@@ -41,6 +41,7 @@ class TranslatedLyricsViewTest {
             clearCache()
             saveDisplayMode(TranslationMode.ORIGINAL)
             saveAutomatic(false)
+            saveServerPause(null)
         }
     }
 
@@ -135,6 +136,49 @@ class TranslatedLyricsViewTest {
             assertEquals(listOf<Lyrics>(lyrics, nextLyrics), requests)
             assertTrue(GeminiLyricsStore(context).automatic())
             assertEquals(TranslationMode.BILINGUAL, GeminiLyricsStore(context).displayMode())
+        }
+    }
+
+    @Test fun rejectedAccessShowsOriginalAcrossSongsUntilManualSuccess() {
+        val store = GeminiLyricsStore(context)
+        store.saveDisplayMode(TranslationMode.BILINGUAL)
+        store.saveAutomatic(true)
+        File(context.noBackupFilesDir, "gemini-lyrics/key.enc").writeBytes(byteArrayOf())
+        val different = Lyrics.Plain("Different song", "Test")
+        var requests = 0
+        compose.setContent {
+            OpenTuneTheme(ThemeSettings()) {
+                LyricsView(LyricsState.Found(playingLyrics.value), position = { 0L }, onSeek = {},
+                    translateLyrics = { _, _, refresh ->
+                        requests++
+                        if (requests == 1) {
+                            check(!refresh)
+                            val rejection = geminiHttpFailure(403, null, "", 0L)
+                            store.saveServerPause(rejection.pause)
+                            throw rejection
+                        }
+                        check(refresh)
+                        store.saveServerPause(null)
+                        GeminiLyricsStore.Translation(listOf("Otra canción"), saved = true)
+                    })
+            }
+        }
+        val errorLabel = "Traducción · Acceso rechazado"
+        compose.waitUntil(8000) { compose.onAllNodesWithText(errorLabel).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Hello world").assertExists()
+        compose.runOnIdle { playingLyrics.value = different }
+        compose.onNodeWithText("Different song").assertExists()
+        compose.onNodeWithText(errorLabel).performClick()
+        compose.onNodeWithText("Traducción automática en pausa. Se muestra la letra original.").assertExists()
+        compose.runOnIdle { assertEquals(1, requests) }
+        compose.onNodeWithText("Reintentar con Gemini").performClick()
+        compose.onNodeWithText("Cerrar").performClick()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithText("Different song\nOtra canción").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.runOnIdle {
+            assertEquals(2, requests)
+            org.junit.Assert.assertNull(GeminiLyricsStore(context).serverPause())
         }
     }
 }

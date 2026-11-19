@@ -5,6 +5,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+val geminiArm64Only = providers.gradleProperty("geminiArm64Only").map { it.toBoolean() }.getOrElse(false)
+
 android {
     namespace = "com.opentune"
     // InnerTubeX's AAR is compiled against 37; targetSdk (runtime behaviour) stays 36.
@@ -48,7 +50,7 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix = ".geminidev"
-            versionNameSuffix = "-gemini-dev.3"
+            versionNameSuffix = "-gemini-dev.4"
         }
         release {
             // Shrinking only: nothing renamed or optimized (see proguard-rules.pro),
@@ -68,10 +70,11 @@ android {
     // that runs anywhere.
     splits {
         abi {
-            isEnable = !providers.gradleProperty("universalOnly").map { it.toBoolean() }.getOrElse(false)
+            isEnable = geminiArm64Only || !providers.gradleProperty("universalOnly").map { it.toBoolean() }.getOrElse(false)
             reset()
-            include("arm64-v8a", "armeabi-v7a", "x86_64")
-            isUniversalApk = true
+            if (geminiArm64Only) include("arm64-v8a")
+            else include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = !geminiArm64Only
         }
     }
     // No encrypted dependency report in the APK: only Google can read it, and
@@ -95,6 +98,13 @@ android {
         unitTests.isReturnDefaultValues = true
         // Robolectric tests (the media library) read the merged manifest and resources.
         unitTests.isIncludeAndroidResources = true
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("debug")) { variant ->
+        val baseCode = requireNotNull(android.defaultConfig.versionCode)
+        variant.outputs.forEach { it.versionCode.set(baseCode + 1) }
     }
 }
 

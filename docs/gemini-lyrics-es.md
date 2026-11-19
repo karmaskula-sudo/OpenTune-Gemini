@@ -13,6 +13,8 @@ Rama local: `feature/gemini-lyrics-es`. No se ha publicado ni enviado nada a ups
 
 La solicitud envía el texto de la letra a Google. Puede consumir cuota o generar cargos según la cuenta. El modo automático está apagado hasta que el usuario lo active y consulta primero la caché. Solo solicita traducciones con la vista de letras activa y la app en primer plano. Una solicitud fallida puede repetirse desde el botón.
 
+Si una solicitud falla, la app conserva la letra original y señala el motivo en **Traducción**. Un rechazo de acceso o un límite de cuota pausa las solicitudes automáticas en todas las canciones y muestra los originales. La pausa persiste al volver a abrir la app. Si Google indica un plazo de espera, **Reintentar con Gemini** se habilita al terminar ese plazo. La pausa se levanta cuando ese reintento recibe una traducción completa de Gemini. Las traducciones guardadas siguen disponibles para volver a mostrarlas al levantarse la pausa.
+
 El modelo inicial es `gemini-3.5-flash-lite`, el [reemplazo recomendado por Google](https://aistudio.google.com/docs/deprecations#gemini-2.5-flash-models) para `gemini-2.5-flash`. El modelo es configurable. Su disponibilidad con la cuenta del usuario no se ha comprobado. Un error 404 indica que debe seleccionarse un modelo disponible que soporte `generateContent` y salida JSON estructurada.
 
 ## Implementación
@@ -33,7 +35,7 @@ La variante debug usa `com.opentune.geminidev` y el nombre **OpenTune Gemini**, 
 Con Java 21 y el SDK de Android configurados. Las pruebas que cargan InnerTubeX requieren Java 21:
 
 ```powershell
-.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug -PuniversalOnly=true
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug -PgeminiArm64Only=true
 ```
 
 El proyecto requiere SDK 37, NDK 27.2.12479018 y CMake 3.22.1 según sus archivos de compilación.

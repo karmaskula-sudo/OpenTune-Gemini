@@ -14,15 +14,14 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-
-/** Only fixed, sanitized messages may cross into the UI. Never expose server bodies or exceptions. */
-internal class TranslationFailure(val userMessage: String) : Exception(userMessage)
 
 internal class GeminiLyricsStore(context: Context) {
     private val preferences = context.getSharedPreferences("gemini_lyrics_display", Context.MODE_PRIVATE)
@@ -44,6 +43,20 @@ internal class GeminiLyricsStore(context: Context) {
 
     fun saveAutomatic(enabled: Boolean) {
         preferences.edit().putBoolean("automatic", enabled).apply()
+    }
+
+    fun serverPause(): GeminiPause? {
+        val reason = preferences.getString("server_pause", null) ?: return null
+        return GeminiPause.Reason.entries.firstOrNull { it.name == reason }?.let {
+            GeminiPause(it, preferences.getLong("server_retry_at", 0L))
+        }
+    }
+
+    fun saveServerPause(pause: GeminiPause?) {
+        val editor = preferences.edit()
+        if (pause == null) editor.remove("server_pause").remove("server_retry_at")
+        else editor.putString("server_pause", pause.reason.name).putLong("server_retry_at", pause.retryAt)
+        editor.apply()
     }
 
     private fun key(): SecretKey {
@@ -93,8 +106,17 @@ internal class GeminiLyricsStore(context: Context) {
 
     data class Translation(val lines: List<String>, val saved: Boolean)
 
-    suspend fun translate(lyrics: Lyrics, model: String, refresh: Boolean): Translation = withContext(Dispatchers.IO) {
-        if (!refresh) cached(lyrics, model)?.let { return@withContext Translation(it, saved = true) }
+    suspend fun translate(lyrics: Lyrics, model: String, refresh: Boolean, manual: Boolean): Translation = requestLock.withLock {
+        // Check inside the shared lock so a new song cannot race a quota or permission rejection.
+        val pause = serverPause()
+        if (pause != null && (!manual || !pause.allowsManualRetry(System.currentTimeMillis()))) {
+            throw TranslationFailure(pause.reason.explanation, pause)
+        }
+        withContext(Dispatchers.IO) { translateOnIo(lyrics, model, refresh = refresh || pause != null) }
+    }
+
+    private suspend fun translateOnIo(lyrics: Lyrics, model: String, refresh: Boolean): Translation {
+        if (!refresh) cached(lyrics, model)?.let { return Translation(it, saved = true) }
         val lines = LyricsTranslation.texts(lyrics)
         if (lines.size > 500 || lines.sumOf { it.length } > 30000) {
             throw TranslationFailure("Esta letra es demasiado larga para traducirla en una consulta.")
@@ -107,7 +129,7 @@ internal class GeminiLyricsStore(context: Context) {
             .build()
         val call = client.newCall(request)
         // Cancels the socket when this lyrics view leaves composition or the song changes.
-        kotlinx.coroutines.suspendCancellableCoroutine<List<String>> { continuation ->
+        val translated = kotlinx.coroutines.suspendCancellableCoroutine<List<String>> { continuation ->
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : okhttp3.Callback {
                 override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
@@ -116,15 +138,15 @@ internal class GeminiLyricsStore(context: Context) {
                 override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
                     val result = runCatching {
                         response.use {
-                            if (!it.isSuccessful) throw TranslationFailure(when (it.code) {
-                                400 -> "Gemini rechazó la solicitud. Revisa la clave y el modelo."
-                                401, 403 -> "Gemini no autorizó la clave o sus permisos."
-                                404 -> "El modelo no está disponible. Cámbialo en la configuración."
-                                429 -> "Se alcanzó la cuota o el límite de solicitudes de Gemini. Inténtalo más tarde."
-                                else -> "Gemini no pudo completar la traducción. Inténtalo de nuevo."
-                            })
-                            val body = it.body ?: error("empty")
-                            val source = body.source()
+                            if (!it.isSuccessful) {
+                                val errorBody = if (it.code == 400 || it.code == 429) {
+                                    runCatching { it.peekBody(16_384).string() }.getOrDefault("")
+                                } else ""
+                                val failure = geminiHttpFailure(it.code, it.header("Retry-After"), errorBody, System.currentTimeMillis())
+                                if (!call.isCanceled()) failure.pause?.let(::saveServerPause)
+                                throw failure
+                            }
+                            val source = it.body.source()
                             require(!source.request((MAX_RESPONSE + 1).toLong()))
                             val bytes = source.readByteArray()
                             LyricsTranslation.response(String(bytes, Charsets.UTF_8), lines)
@@ -136,24 +158,25 @@ internal class GeminiLyricsStore(context: Context) {
                 }
             })
         }
-            .let { translated ->
-                ensureActive()
-                val payload = buildJsonArray {
-                    translated.forEachIndexed { i, text ->
-                        add(buildJsonObject { put("id", i); put("text", text) })
-                    }
-                }.toString().toByteArray(Charsets.UTF_8)
-                val saved = runCatching {
-                    require(payload.size <= MAX_RESPONSE)
-                    atomicWrite(File(cache, LyricsTranslation.cacheKey(lyrics, model) + ".json"), payload)
-                }.isSuccess
-                Translation(translated, saved)
+        kotlin.coroutines.coroutineContext.ensureActive()
+        // Only a complete response from Gemini lifts a pause. A cached result cannot lift it.
+        if (serverPause() != null) saveServerPause(null)
+        val payload = buildJsonArray {
+            translated.forEachIndexed { i, text ->
+                add(buildJsonObject { put("id", i); put("text", text) })
             }
+        }.toString().toByteArray(Charsets.UTF_8)
+        val saved = runCatching {
+            require(payload.size <= MAX_RESPONSE)
+            atomicWrite(File(cache, LyricsTranslation.cacheKey(lyrics, model) + ".json"), payload)
+        }.isSuccess
+        return Translation(translated, saved)
     }
 
     companion object {
         private const val ALIAS = "opentune.gemini.lyrics.v1"
         private const val MAX_RESPONSE = 1_000_000
+        private val requestLock = Mutex()
         private val client = OkHttpClient.Builder().callTimeout(60, TimeUnit.SECONDS)
             .connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
             .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build()
