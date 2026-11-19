@@ -48,7 +48,7 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix = ".geminidev"
-            versionNameSuffix = "-gemini-dev"
+            versionNameSuffix = "-gemini-dev.2"
         }
         release {
             // Shrinking only: nothing renamed or optimized (see proguard-rules.pro),

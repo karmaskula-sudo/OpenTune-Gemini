@@ -6,10 +6,10 @@ Rama local: `feature/gemini-lyrics-es`. No se ha publicado ni enviado nada a ups
 ## Uso
 
 1. Abre una canción con letra y pulsa **Traducción · Original**.
-2. Introduce tu clave directamente en el teléfono. Puedes cambiar el identificador del modelo. Pulsa **Guardar configuración**.
+2. La primera vez, entra en **Configurar Gemini** e introduce la clave directamente en el teléfono. Pulsa **Guardar configuración**. La clave y el modelo sirven para todas las canciones.
 3. Pulsa **Traducir al español**. Este es el único paso que puede iniciar una consulta a Gemini.
-4. Alterna **Original**, **Español** y **Bilingüe** en ese mismo diálogo. Si existe caché, no se hace otra consulta. Puedes cerrar el diálogo durante la consulta.
-5. **Eliminar clave** borra la credencial local. **Borrar caché** elimina las traducciones guardadas y vuelve al modo Original.
+4. Alterna **Original**, **Español** y **Bilingüe**. La app recuerda el modo y lo aplica al volver a una letra ya traducida. Una canción nueva muestra el original hasta que pulses **Traducir al español**. **Volver a traducir** solicita una versión nueva y usa cuota.
+5. En **Configurar Gemini**, **Eliminar clave** borra la credencial local y **Borrar caché** elimina las traducciones guardadas.
 
 La solicitud envía el texto de la letra a Google. Puede consumir cuota o generar cargos según la cuenta. No se consulta automáticamente al abrir una canción. La lectura automática de caché no usa la red. No hay reintentos automáticos de traducción.
 
@@ -20,7 +20,7 @@ El modelo inicial es `gemini-3.5-flash-lite`, el [reemplazo recomendado por Goog
 - Se conservan inicio, fin, voz, partes y desplazamiento de la letra original. Cada fila recibe un identificador, incluso las vacías y repetidas. Se rechazan respuestas con filas faltantes, duplicadas, desordenadas o añadidas.
 - El modo Original mantiene la sincronización por palabra. Español y Bilingüe usan sincronización por línea, sin inventar tiempos por palabra. Las voces de fondo permanecen en el idioma original.
 - Las letras sin tiempos siguen siendo letras sin sincronización.
-- La caché identifica el contenido exacto, los límites de línea, idioma, modelo y versión del formato mediante SHA-256. Conserva como máximo 100 archivos; un cambio de modelo o letra usa otra entrada. Un archivo inválido se ignora.
+- La caché identifica las líneas, idioma, modelo y versión del formato mediante SHA-256. Las diferencias de espacios o tiempos de la misma letra no fuerzan otra consulta. Los cambios de texto, de división en líneas o de modelo usan otra entrada. Se conservan las traducciones anteriores que aún existan en el dispositivo. El caché no tiene vencimiento automático.
 - La clave se cifra con AES-GCM y una clave de Android Keystore. El archivo cifrado y la caché se guardan en `noBackupFilesDir`. La clave no se incorpora al APK, repositorio, URL, registros o preferencias generales. El diálogo impide capturas mediante la política de ventana segura y no restaura la clave en el estado de pantalla.
 - El cliente usa HTTPS, cabecera `x-goog-api-key`, tiempo límite de 60 segundos y no sigue redirecciones. Los mensajes al usuario nunca muestran cuerpos de errores del servidor ni excepciones sin filtrar.
 - Cambiar de canción o salir de la vista cancela la consulta y descarta el estado anterior. El código de traducción no controla ni detiene el reproductor.

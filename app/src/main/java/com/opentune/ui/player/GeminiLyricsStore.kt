@@ -25,12 +25,20 @@ import okhttp3.RequestBody.Companion.toRequestBody
 internal class TranslationFailure(val userMessage: String) : Exception(userMessage)
 
 internal class GeminiLyricsStore(context: Context) {
+    private val preferences = context.getSharedPreferences("gemini_lyrics_display", Context.MODE_PRIVATE)
     private val root = File(context.noBackupFilesDir, "gemini-lyrics").apply { mkdirs() }
     private val secret = File(root, "key.enc")
     private val modelFile = File(root, "model.txt")
     private val cache = File(root, "translations").apply { mkdirs() }
     fun hasKey() = secret.exists()
     fun model() = runCatching { modelFile.readText() }.getOrDefault(LyricsTranslation.DEFAULT_MODEL)
+    fun displayMode(): TranslationMode = TranslationMode.entries.firstOrNull {
+        it.name == preferences.getString("mode", null)
+    } ?: TranslationMode.ORIGINAL
+
+    fun saveDisplayMode(mode: TranslationMode) {
+        preferences.edit().putString("mode", mode.name).apply()
+    }
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -66,15 +74,21 @@ internal class GeminiLyricsStore(context: Context) {
     }
 
     suspend fun cached(lyrics: Lyrics, model: String): List<String>? = withContext(Dispatchers.IO) {
-        runCatching {
-            val file = File(cache, LyricsTranslation.cacheKey(lyrics, model) + ".json")
-            require(file.length() <= MAX_RESPONSE)
-            LyricsTranslation.decode(file.readText(), LyricsTranslation.texts(lyrics))
-        }.getOrNull()
+        val lines = LyricsTranslation.texts(lyrics)
+        listOf(LyricsTranslation.cacheKey(lyrics, model), LyricsTranslation.legacyCacheKey(lyrics, model))
+            .firstNotNullOfOrNull { key ->
+                runCatching {
+                    val file = File(cache, "$key.json")
+                    require(file.length() <= MAX_RESPONSE)
+                    LyricsTranslation.decode(file.readText(), lines)
+                }.getOrNull()
+            }
     }
 
-    suspend fun translate(lyrics: Lyrics, model: String): List<String> = withContext(Dispatchers.IO) {
-        cached(lyrics, model)?.let { return@withContext it }
+    data class Translation(val lines: List<String>, val saved: Boolean)
+
+    suspend fun translate(lyrics: Lyrics, model: String, refresh: Boolean): Translation = withContext(Dispatchers.IO) {
+        if (!refresh) cached(lyrics, model)?.let { return@withContext Translation(it, saved = true) }
         val lines = LyricsTranslation.texts(lyrics)
         if (lines.size > 500 || lines.sumOf { it.length } > 30000) {
             throw TranslationFailure("Esta letra es demasiado larga para traducirla en una consulta.")
@@ -115,17 +129,20 @@ internal class GeminiLyricsStore(context: Context) {
                     continuation.resumeWith(result)
                 }
             })
-        }.also { translated: List<String> ->
-            ensureActive()
-            val payload = buildJsonArray { translated.forEachIndexed { i, text -> add(buildJsonObject {
-                put("id", i); put("text", text)
-            }) } }.toString()
-            // A full disk must not discard a successful translation.
-            runCatching {
-                atomicWrite(File(cache, LyricsTranslation.cacheKey(lyrics, model) + ".json"), payload.toByteArray(Charsets.UTF_8))
-                cache.listFiles()?.sortedByDescending { it.lastModified() }?.drop(100)?.forEach { it.delete() }
-            }
         }
+            .let { translated ->
+                ensureActive()
+                val payload = buildJsonArray {
+                    translated.forEachIndexed { i, text ->
+                        add(buildJsonObject { put("id", i); put("text", text) })
+                    }
+                }.toString().toByteArray(Charsets.UTF_8)
+                val saved = runCatching {
+                    require(payload.size <= MAX_RESPONSE)
+                    atomicWrite(File(cache, LyricsTranslation.cacheKey(lyrics, model) + ".json"), payload)
+                }.isSuccess
+                Translation(translated, saved)
+            }
     }
 
     companion object {

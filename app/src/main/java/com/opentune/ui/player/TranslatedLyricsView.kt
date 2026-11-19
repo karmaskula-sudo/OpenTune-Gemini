@@ -35,27 +35,31 @@ fun LyricsView(
     controlsVisible: Boolean = true,
 ) {
     // Keyed composition owns both state and scope: late results cannot enter another song.
-    key(state, shareSong) {
+    key(state, shareSong?.videoId) {
         val context = LocalContext.current.applicationContext
         val store = remember { GeminiLyricsStore(context) }
         val scope = rememberCoroutineScope()
         val lyrics = (state as? LyricsState.Found)?.lyrics
         var model by remember { mutableStateOf(store.model()) }
         var translated by remember { mutableStateOf<List<String>?>(null) }
-        var mode by remember { mutableStateOf(TranslationMode.ORIGINAL) }
+        var preferredMode by remember { mutableStateOf(store.displayMode()) }
         var busy by remember { mutableStateOf(false) }
         var cacheLoading by remember { mutableStateOf(true) }
         var message by remember { mutableStateOf<String?>(null) }
         var dialog by remember { mutableStateOf(false) }
         var hasKey by remember { mutableStateOf(store.hasKey()) }
+        fun selectMode(mode: TranslationMode) {
+            store.saveDisplayMode(mode)
+            preferredMode = mode
+        }
         LaunchedEffect(lyrics, model) {
             cacheLoading = true
             translated = null
-            mode = TranslationMode.ORIGINAL
             try {
                 if (lyrics != null) translated = store.cached(lyrics, model)
             } finally { cacheLoading = false }
         }
+        val mode = if (translated == null) TranslationMode.ORIGINAL else preferredMode
         val shown = remember(lyrics, translated, mode) {
             lyrics?.let { LyricsState.Found(LyricsTranslation.display(it, translated, mode)) } ?: state
         }
@@ -72,82 +76,98 @@ fun LyricsView(
             // Never rememberSaveable, prefill, log, or put the secret in application settings.
             var enteredKey by remember { mutableStateOf("") }
             var enteredModel by remember { mutableStateOf(model) }
+            var showSettings by remember { mutableStateOf(false) }
             AlertDialog(
                 onDismissRequest = { dialog = false },
                 properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
                 title = { Text("Traducción con Gemini") },
                 text = {
                     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Al pulsar Traducir, se enviará esta letra a Google usando tu clave. Puede consumir cuota o generar cargos. Cambiar de modo usa la traducción local.")
+                        Text(when {
+                            translated != null -> "Traducción disponible en este dispositivo."
+                            hasKey -> "Tu clave ya está configurada para todas las canciones. Traducir envía la letra a Google y usa tu cuota."
+                            else -> "Configura tu clave de Gemini una sola vez para traducir tus canciones."
+                        })
                         TranslationMode.entries.forEach { option ->
                             FilterChip(selected = mode == option,
-                                enabled = option == TranslationMode.ORIGINAL || translated != null,
-                                onClick = { mode = option }, label = { Text(option.label) })
+                                enabled = !busy && (option == TranslationMode.ORIGINAL || translated != null),
+                                onClick = { selectMode(option) }, label = { Text(option.label) })
                         }
-                        OutlinedTextField(value = enteredKey, onValueChange = { enteredKey = it },
-                            enabled = !busy, label = { Text(if (hasKey) "Reemplazar clave guardada" else "Clave API de Gemini") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false), singleLine = true)
-                        OutlinedTextField(value = enteredModel, onValueChange = { enteredModel = it },
-                            enabled = !busy, label = { Text("Modelo de Gemini") }, singleLine = true)
-                        TextButton(enabled = !busy && !cacheLoading, onClick = {
-                            busy = true
-                            scope.launch {
-                                try {
-                                    withContext(Dispatchers.IO) { store.save(enteredKey, enteredModel.trim()) }
-                                    enteredKey = ""
-                                    model = enteredModel.trim()
-                                    hasKey = store.hasKey()
-                                    message = "Configuración guardada en este dispositivo."
-                                } catch (e: CancellationException) { throw e }
-                                catch (_: Exception) { message = "No se pudo guardar. Revisa el modelo y la clave." }
-                                finally { busy = false }
-                            }
-                        }) { Text("Guardar configuración") }
-                        TextButton(enabled = !busy && hasKey, onClick = {
-                            busy = true
-                            scope.launch {
-                                try {
-                                    withContext(Dispatchers.IO) { store.deleteKey() }
-                                    hasKey = store.hasKey(); enteredKey = ""
-                                    message = "Clave eliminada."
-                                } catch (e: CancellationException) { throw e }
-                                catch (_: Exception) { message = "No se pudo eliminar la clave." }
-                                finally { busy = false }
-                            }
-                        }) { Text("Eliminar clave") }
-                        TextButton(enabled = !busy && !cacheLoading, onClick = {
-                            busy = true
-                            scope.launch {
-                                try {
-                                    withContext(Dispatchers.IO) { store.clearCache() }
-                                    translated = null; mode = TranslationMode.ORIGINAL
-                                    message = "Caché de traducciones borrada."
-                                } catch (e: CancellationException) { throw e }
-                                catch (_: Exception) { message = "No se pudo borrar la caché." }
-                                finally { busy = false }
-                            }
-                        }) { Text("Borrar caché") }
+                        TextButton(enabled = !busy, onClick = {
+                            showSettings = !showSettings
+                            if (!showSettings) { enteredKey = ""; enteredModel = model }
+                        }) { Text(if (showSettings) "Ocultar configuración" else "Configurar Gemini") }
+                        if (showSettings) {
+                            OutlinedTextField(value = enteredKey, onValueChange = { enteredKey = it },
+                                enabled = !busy, label = { Text(if (hasKey) "Reemplazar clave guardada" else "Clave API de Gemini") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false), singleLine = true)
+                            OutlinedTextField(value = enteredModel, onValueChange = { enteredModel = it },
+                                enabled = !busy, label = { Text("Modelo de Gemini") }, singleLine = true)
+                            TextButton(enabled = !busy && !cacheLoading, onClick = {
+                                busy = true
+                                scope.launch {
+                                    try {
+                                        withContext(Dispatchers.IO) { store.save(enteredKey, enteredModel.trim()) }
+                                        enteredKey = ""
+                                        model = enteredModel.trim()
+                                        enteredModel = model
+                                        hasKey = store.hasKey()
+                                        showSettings = false
+                                        message = "Configuración guardada en este dispositivo."
+                                    } catch (e: CancellationException) { throw e }
+                                    catch (_: Exception) { message = "No se pudo guardar. Revisa el modelo y la clave." }
+                                    finally { busy = false }
+                                }
+                            }) { Text("Guardar configuración") }
+                            TextButton(enabled = !busy && hasKey, onClick = {
+                                busy = true
+                                scope.launch {
+                                    try {
+                                        withContext(Dispatchers.IO) { store.deleteKey() }
+                                        hasKey = store.hasKey(); enteredKey = ""
+                                        message = "Clave eliminada."
+                                    } catch (e: CancellationException) { throw e }
+                                    catch (_: Exception) { message = "No se pudo eliminar la clave." }
+                                    finally { busy = false }
+                                }
+                            }) { Text("Eliminar clave") }
+                            TextButton(enabled = !busy && !cacheLoading, onClick = {
+                                busy = true
+                                scope.launch {
+                                    try {
+                                        withContext(Dispatchers.IO) { store.clearCache() }
+                                        translated = null
+                                        message = "Caché de traducciones borrada."
+                                    } catch (e: CancellationException) { throw e }
+                                    catch (_: Exception) { message = "No se pudo borrar la caché." }
+                                    finally { busy = false }
+                                }
+                            }) { Text("Borrar caché") }
+                        }
                         if (busy) CircularProgressIndicator()
                         message?.let { Text(it) }
                         Text("Sincronización por línea. Las voces de fondo permanecen en su idioma original.", style = MaterialTheme.typography.bodySmall)
                     }
                 },
                 confirmButton = {
-                    TextButton(enabled = !busy && !cacheLoading && (hasKey || translated != null) && enteredKey.isEmpty() && enteredModel == model,
+                    TextButton(enabled = !busy && !cacheLoading && hasKey && !showSettings,
                         onClick = {
+                            val refresh = translated != null
                             busy = true; message = null
                             scope.launch {
                                 try {
-                                    translated = translated ?: store.translate(lyrics, model)
-                                    mode = TranslationMode.SPANISH
-                                    message = "Traducción lista. Puedes cambiar de modo sin nuevas consultas."
+                                    val result = store.translate(lyrics, model, refresh)
+                                    translated = result.lines
+                                    if (preferredMode == TranslationMode.ORIGINAL) selectMode(TranslationMode.SPANISH)
+                                    message = if (result.saved) "Traducción guardada. Cambiar de modo no usa cuota."
+                                        else "Traducción lista, pero no se pudo guardar en el dispositivo."
                                 } catch (e: CancellationException) { throw e }
                                 catch (e: TranslationFailure) { message = e.userMessage }
                                 catch (_: Exception) { message = "No se pudo completar la traducción." }
                                 finally { busy = false }
                             }
-                        }) { Text(if (busy) "Traduciendo…" else "Traducir al español") }
+                        }) { Text(if (busy) "Traduciendo…" else if (translated != null) "Volver a traducir" else "Traducir al español") }
                 },
                 dismissButton = { TextButton(onClick = { dialog = false }) { Text("Cerrar") } },
             )

@@ -81,6 +81,14 @@ class LyricsTranslationTest {
         assertFalse(request.toString().contains("x-goog-api-key"))
     }
 
+    @Test fun `cache survives formatting and timing changes to the same lines`() {
+        val formatted = original.copy(lines = original.lines.map { line ->
+            line.copy(text = "\t ${line.text}\u00a0", startMs = line.startMs + 20)
+        })
+        assertEquals(LyricsTranslation.cacheKey(original, "a"), LyricsTranslation.cacheKey(formatted, "a"))
+        assertNotEquals(LyricsTranslation.legacyCacheKey(original, "a"), LyricsTranslation.legacyCacheKey(formatted, "a"))
+    }
+
     @Test fun `response skips thoughts and decodes only completed output`() {
         val body = """{"candidates":[{"finishReason":"STOP","content":{"parts":[{"thought":true,"text":"not output"},{"text":"[{\"id\":0,\"text\":\"Hola\"}]"}]}}]}"""
         assertEquals(listOf("Hola"), LyricsTranslation.response(body, listOf("Hello")))
