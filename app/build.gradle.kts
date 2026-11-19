@@ -20,7 +20,10 @@ android {
         // goes out before the app's own notes for it are written.
         val changelog = rootProject.file("fastlane/metadata/android/en-US/changelogs/$versionCode.txt")
             .takeIf { it.exists() }?.readText().orEmpty().trim()
-        buildConfigField("String", "CHANGELOG", "\"" + changelog.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\"")
+        val javaChangelog = changelog.lineSequence().joinToString("\\n") { line ->
+            line.replace("\\", "\\\\").replace("\"", "\\\"")
+        }
+        buildConfigField("String", "CHANGELOG", "\"$javaChangelog\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

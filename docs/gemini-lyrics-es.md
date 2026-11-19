@@ -13,7 +13,7 @@ Rama local: `feature/gemini-lyrics-es`. No se ha publicado ni enviado nada a ups
 
 La solicitud envía el texto de la letra a Google. Puede consumir cuota o generar cargos según la cuenta. No se consulta automáticamente al abrir una canción. La lectura automática de caché no usa la red. No hay reintentos automáticos de traducción.
 
-El modelo inicial es `gemini-2.5-flash`, configurable. Su disponibilidad con la cuenta del usuario no se ha comprobado. Un error 404 indica que debe seleccionarse un modelo disponible que soporte `generateContent` y salida JSON estructurada.
+El modelo inicial es `gemini-3.5-flash-lite`, el [reemplazo recomendado por Google](https://aistudio.google.com/docs/deprecations#gemini-2.5-flash-models) para `gemini-2.5-flash`. El modelo es configurable. Su disponibilidad con la cuenta del usuario no se ha comprobado. Un error 404 indica que debe seleccionarse un modelo disponible que soporte `generateContent` y salida JSON estructurada.
 
 ## Implementación
 
@@ -30,7 +30,7 @@ El modelo inicial es `gemini-2.5-flash`, configurable. Su disponibilidad con la 
 
 La variante debug usa `com.opentune.geminidev` y el nombre **OpenTune Gemini**, para coexistir con la app original. Las variantes release mantienen la configuración de upstream; para estas pruebas usa debug.
 
-Con Java 17 y el SDK de Android configurados:
+Con Java 21 y el SDK de Android configurados. Las pruebas que cargan InnerTubeX requieren Java 21:
 
 ```powershell
 .\gradlew.bat :app:testDebugUnitTest :app:assembleDebug -PuniversalOnly=true
@@ -38,7 +38,7 @@ Con Java 17 y el SDK de Android configurados:
 
 El proyecto requiere SDK 37, NDK 27.2.12479018 y CMake 3.22.1 según sus archivos de compilación.
 
-Pruebas aisladas sin SDK ni clave:
+Pruebas aisladas con Java 17, sin SDK ni clave:
 
 ```powershell
 .\gradlew.bat -p translation-tests test

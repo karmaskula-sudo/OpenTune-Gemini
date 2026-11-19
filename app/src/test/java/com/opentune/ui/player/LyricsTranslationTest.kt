@@ -18,7 +18,20 @@ class LyricsTranslationTest {
         assertEquals(original.recordingMs, shown.recordingMs)
         assertEquals(VOICE_SECOND, shown.lines[2].voice)
         assertEquals("", shown.lines[1].text)
-        assertTrue(shown.lines.all { !it.wordSynced && it.words.isEmpty() })
+        assertTrue(shown.lines.none { it.wordSynced })
+    }
+
+    @Test fun `translated display preserves instrumental breaks`() {
+        val separated = original.copy(lines = listOf(
+            original.lines.first().copy(endMs = 8000),
+            original.lines.last().copy(startMs = 8000, endMs = 9000),
+        ))
+        val gaps = separated.lines.instrumentalGaps()
+        assertEquals(1, gaps.size)
+        for (mode in listOf(TranslationMode.SPANISH, TranslationMode.BILINGUAL)) {
+            val shown = LyricsTranslation.display(separated, listOf("Hola", "Hola"), mode) as Lyrics.Synced
+            assertEquals(gaps, shown.lines.instrumentalGaps())
+        }
     }
 
     @Test fun `original retains word timing and bilingual pairs each line`() {

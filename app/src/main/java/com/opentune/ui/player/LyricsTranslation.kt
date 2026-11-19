@@ -1,6 +1,8 @@
 package com.opentune.ui.player
 
 import com.opentune.data.lyrics.Lyrics
+import com.opentune.data.lyrics.LyricWord
+import com.opentune.data.lyrics.sungUntilMs
 import java.security.MessageDigest
 import kotlinx.serialization.json.*
 
@@ -10,7 +12,7 @@ internal enum class TranslationMode(val label: String) {
 
 /** Indices include empty instrumental rows, so a translation cannot shift the clock. */
 internal object LyricsTranslation {
-    const val DEFAULT_MODEL = "gemini-2.5-flash"
+    const val DEFAULT_MODEL = "gemini-3.5-flash-lite"
     fun texts(lyrics: Lyrics): List<String> = when (lyrics) {
         is Lyrics.Synced -> lyrics.lines.map { it.text }
         is Lyrics.Plain -> lyrics.text.lines()
@@ -91,7 +93,11 @@ internal object LyricsTranslation {
             else translated[i]
         return when (lyrics) {
             is Lyrics.Synced -> lyrics.copy(lines = lyrics.lines.mapIndexed { i, line ->
-                line.copy(text = shown(i), words = emptyList(), wordSynced = false,
+                val text = shown(i)
+                // One timed span retains the original end of singing for instrumental gaps.
+                val span = if (line.words.isEmpty()) emptyList()
+                    else listOf(LyricWord(text, line.startMs, line.sungUntilMs()))
+                line.copy(text = text, words = span, wordSynced = false,
                     rtl = if (mode == TranslationMode.SPANISH) false else line.rtl)
             })
             is Lyrics.Plain -> lyrics.copy(text = originals.indices.joinToString("\n") { shown(it) })
