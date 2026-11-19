@@ -10,11 +10,14 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.core.app.ApplicationProvider
 import com.opentune.data.lyrics.Lyrics
+import com.opentune.data.model.Song
 import com.opentune.data.settings.AppSettings
 import com.opentune.data.settings.ThemeSettings
 import com.opentune.ui.LyricsState
 import com.opentune.ui.theme.OpenTuneTheme
 import java.io.File
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -33,7 +36,12 @@ class TranslatedLyricsViewTest {
     @Before fun setup() {
         context = ApplicationProvider.getApplicationContext()
         AppSettings.init(context)
-        GeminiLyricsStore(context).apply { deleteKey(); clearCache(); saveDisplayMode(TranslationMode.ORIGINAL) }
+        GeminiLyricsStore(context).apply {
+            deleteKey()
+            clearCache()
+            saveDisplayMode(TranslationMode.ORIGINAL)
+            saveAutomatic(false)
+        }
     }
 
     private fun show() {
@@ -83,5 +91,50 @@ class TranslatedLyricsViewTest {
         }
         compose.onNodeWithText("Hello world\nHola mundo").assertExists()
         org.junit.Assert.assertEquals(TranslationMode.BILINGUAL, GeminiLyricsStore(context).displayMode())
+    }
+
+    @Test fun oneOptInTranslatesTheNextSongInBilingualMode() {
+        val store = GeminiLyricsStore(context)
+        store.saveDisplayMode(TranslationMode.BILINGUAL)
+        // Credential presence only. The fake transport never reads this file or calls Gemini.
+        File(context.noBackupFilesDir, "gemini-lyrics/key.enc").writeBytes(byteArrayOf())
+        val first = Song("first", "First", "Test", null)
+        val next = Song("next", "Next", "Test", null)
+        val nextLyrics = Lyrics.Plain("Second song", "Test")
+        val song = mutableStateOf(first)
+        val state = mutableStateOf(LyricsState.Found(lyrics, first.videoId))
+        val requests = mutableListOf<Lyrics>()
+        compose.setContent {
+            OpenTuneTheme(ThemeSettings()) {
+                LyricsView(state.value, position = { 0L }, onSeek = {}, shareSong = song.value,
+                    translateLyrics = { source, _, refresh ->
+                        check(!refresh)
+                        requests += source
+                        GeminiLyricsStore.Translation(listOf(if (source == lyrics) "Hola mundo" else "Segunda canción"), saved = true)
+                    })
+            }
+        }
+        compose.onNodeWithText("Traducción · Original").performClick()
+        compose.runOnIdle { assertTrue(requests.isEmpty()) }
+        compose.onNodeWithContentDescription("Traducción automática").assertIsOff().performClick()
+        compose.onNodeWithText("Cerrar").performClick()
+        compose.waitUntil(8000) {
+            compose.onAllNodesWithText("Hello world\nHola mundo").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.runOnIdle {
+            assertEquals(listOf<Lyrics>(lyrics), requests)
+            // The player can announce the new song before it publishes the new lyrics.
+            song.value = next
+        }
+        compose.onNodeWithText("Hello world\nHola mundo").assertDoesNotExist()
+        compose.runOnIdle { state.value = LyricsState.Found(nextLyrics, next.videoId) }
+        compose.waitUntil(8000) {
+            compose.onAllNodesWithText("Second song\nSegunda canción").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.runOnIdle {
+            assertEquals(listOf<Lyrics>(lyrics, nextLyrics), requests)
+            assertTrue(GeminiLyricsStore(context).automatic())
+            assertEquals(TranslationMode.BILINGUAL, GeminiLyricsStore(context).displayMode())
+        }
     }
 }

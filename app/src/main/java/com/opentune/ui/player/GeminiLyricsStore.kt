@@ -40,6 +40,12 @@ internal class GeminiLyricsStore(context: Context) {
         preferences.edit().putString("mode", mode.name).apply()
     }
 
+    fun automatic() = preferences.getBoolean("automatic", false)
+
+    fun saveAutomatic(enabled: Boolean) {
+        preferences.edit().putBoolean("automatic", enabled).apply()
+    }
+
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         return (store.getKey(ALIAS, null) as? SecretKey) ?: KeyGenerator.getInstance("AES", "AndroidKeyStore").apply {

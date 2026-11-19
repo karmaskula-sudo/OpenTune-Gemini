@@ -1,4 +1,4 @@
-# Traducción manual de letras con Gemini
+# Traducción de letras con Gemini
 
 Copia de https://github.com/justshivv/Opentune, base `09713602090e232014ad264b154a9d9edead1763`.
 Rama local: `feature/gemini-lyrics-es`. No se ha publicado ni enviado nada a upstream.
@@ -7,11 +7,11 @@ Rama local: `feature/gemini-lyrics-es`. No se ha publicado ni enviado nada a ups
 
 1. Abre una canción con letra y pulsa **Traducción · Original**.
 2. La primera vez, entra en **Configurar Gemini** e introduce la clave directamente en el teléfono. Pulsa **Guardar configuración**. La clave y el modelo sirven para todas las canciones.
-3. Pulsa **Traducir al español**. Este es el único paso que puede iniciar una consulta a Gemini.
-4. Alterna **Original**, **Español** y **Bilingüe**. La app recuerda el modo y lo aplica al volver a una letra ya traducida. Una canción nueva muestra el original hasta que pulses **Traducir al español**. **Volver a traducir** solicita una versión nueva y usa cuota.
+3. Activa **Traducción automática** una vez para que cada canción nueva se traduzca al tener la vista de letras abierta. Conserva **Español** o **Bilingüe** para que siga activa. Seleccionar **Original** pausa las consultas automáticas.
+4. Si prefieres iniciar cada consulta tú, deja el interruptor apagado y pulsa **Traducir al español**. **Volver a traducir** solicita una versión nueva. Cambiar de modo usa la traducción guardada cuando está disponible.
 5. En **Configurar Gemini**, **Eliminar clave** borra la credencial local y **Borrar caché** elimina las traducciones guardadas.
 
-La solicitud envía el texto de la letra a Google. Puede consumir cuota o generar cargos según la cuenta. No se consulta automáticamente al abrir una canción. La lectura automática de caché no usa la red. No hay reintentos automáticos de traducción.
+La solicitud envía el texto de la letra a Google. Puede consumir cuota o generar cargos según la cuenta. El modo automático está apagado hasta que el usuario lo active y consulta primero la caché. Solo solicita traducciones con la vista de letras activa y la app en primer plano. Una solicitud fallida puede repetirse desde el botón.
 
 El modelo inicial es `gemini-3.5-flash-lite`, el [reemplazo recomendado por Google](https://aistudio.google.com/docs/deprecations#gemini-2.5-flash-models) para `gemini-2.5-flash`. El modelo es configurable. Su disponibilidad con la cuenta del usuario no se ha comprobado. Un error 404 indica que debe seleccionarse un modelo disponible que soporte `generateContent` y salida JSON estructurada.
 

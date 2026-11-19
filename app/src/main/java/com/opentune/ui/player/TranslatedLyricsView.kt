@@ -8,20 +8,26 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.SecureFlagPolicy
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.opentune.data.lyrics.Lyrics
 import com.opentune.data.model.Song
 import com.opentune.ui.LyricsState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun LyricsView(
+internal fun LyricsView(
     state: LyricsState,
     position: () -> Long,
     onSeek: (Long) -> Unit,
@@ -33,24 +39,61 @@ fun LyricsView(
     playing: () -> Boolean = { true },
     seeks: () -> Long = { 0L },
     controlsVisible: Boolean = true,
+    lyricsVisible: Boolean = true,
+    translateLyrics: (suspend (Lyrics, String, Boolean) -> GeminiLyricsStore.Translation)? = null,
 ) {
     // Keyed composition owns both state and scope: late results cannot enter another song.
-    key(state, shareSong?.videoId) {
+    val visibleState = if (state is LyricsState.Found && state.songId != null &&
+        shareSong != null && state.songId != shareSong.videoId) LyricsState.Loading else state
+    key(visibleState, shareSong?.videoId) {
         val context = LocalContext.current.applicationContext
+        val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
         val store = remember { GeminiLyricsStore(context) }
         val scope = rememberCoroutineScope()
-        val lyrics = (state as? LyricsState.Found)?.lyrics
+        val lyrics = (visibleState as? LyricsState.Found)?.lyrics
         var model by remember { mutableStateOf(store.model()) }
         var translated by remember { mutableStateOf<List<String>?>(null) }
         var preferredMode by remember { mutableStateOf(store.displayMode()) }
+        var automatic by remember { mutableStateOf(store.automatic()) }
         var busy by remember { mutableStateOf(false) }
         var cacheLoading by remember { mutableStateOf(true) }
         var message by remember { mutableStateOf<String?>(null) }
+        var translationError by remember { mutableStateOf(false) }
         var dialog by remember { mutableStateOf(false) }
         var hasKey by remember { mutableStateOf(store.hasKey()) }
         fun selectMode(mode: TranslationMode) {
             store.saveDisplayMode(mode)
             preferredMode = mode
+        }
+        suspend fun requestTranslation(lyrics: Lyrics, refresh: Boolean) {
+            if (busy) return
+            busy = true
+            translationError = false
+            message = null
+            try {
+                val result = translateLyrics?.invoke(lyrics, model, refresh)
+                    ?: store.translate(lyrics, model, refresh)
+                translated = result.lines
+                if (preferredMode == TranslationMode.ORIGINAL) selectMode(TranslationMode.SPANISH)
+                message = if (result.saved) "Traducción guardada."
+                    else "Traducción lista, pero no se pudo guardar en el dispositivo."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                translationError = true
+                message = (e as? TranslationFailure)?.userMessage ?: "No se pudo completar la traducción."
+            } finally {
+                busy = false
+            }
+        }
+        // The player can keep a second lyrics pane mounted offscreen during transitions.
+        LaunchedEffect(lyricsVisible) {
+            if (lyricsVisible) {
+                model = store.model()
+                preferredMode = store.displayMode()
+                automatic = store.automatic()
+                hasKey = store.hasKey()
+            }
         }
         LaunchedEffect(lyrics, model) {
             cacheLoading = true
@@ -59,14 +102,27 @@ fun LyricsView(
                 if (lyrics != null) translated = store.cached(lyrics, model)
             } finally { cacheLoading = false }
         }
+        val mayTranslateAutomatically = automatic && hasKey && preferredMode != TranslationMode.ORIGINAL &&
+            lyricsVisible && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
+        // Wait briefly before sending anything so flipping through tracks skips transient lyrics.
+        LaunchedEffect(model, cacheLoading, mayTranslateAutomatically) {
+            if (lyrics != null && mayTranslateAutomatically && !cacheLoading && translated == null) {
+                delay(750)
+                if (translated == null) requestTranslation(lyrics, refresh = false)
+            }
+        }
         val mode = if (translated == null) TranslationMode.ORIGINAL else preferredMode
         val shown = remember(lyrics, translated, mode) {
-            lyrics?.let { LyricsState.Found(LyricsTranslation.display(it, translated, mode)) } ?: state
+            lyrics?.let { LyricsState.Found(LyricsTranslation.display(it, translated, mode)) } ?: visibleState
         }
         Column(modifier) {
             if (lyrics != null && controlsVisible) {
                 TextButton(onClick = { dialog = true }) {
-                    Text(if (busy) "Traduciendo…" else "Traducción · ${mode.label}")
+                    Text(when {
+                        busy -> "Traduciendo…"
+                        translationError -> "Traducción · Ver aviso"
+                        else -> "Traducción · ${mode.label}"
+                    })
                 }
             }
             LyricsContent(shown, position, onSeek, Modifier.weight(1f), synced, blur,
@@ -89,10 +145,25 @@ fun LyricsView(
                             else -> "Configura tu clave de Gemini una sola vez para traducir tus canciones."
                         })
                         TranslationMode.entries.forEach { option ->
-                            FilterChip(selected = mode == option,
-                                enabled = !busy && (option == TranslationMode.ORIGINAL || translated != null),
+                            FilterChip(selected = preferredMode == option,
+                                enabled = !busy && (option == TranslationMode.ORIGINAL || translated != null || hasKey),
                                 onClick = { selectMode(option) }, label = { Text(option.label) })
                         }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            Text("Traducción automática", Modifier.weight(1f))
+                            Switch(
+                                checked = automatic,
+                                enabled = hasKey || automatic,
+                                onCheckedChange = { enabled ->
+                                    store.saveAutomatic(enabled)
+                                    automatic = enabled
+                                    if (enabled && preferredMode == TranslationMode.ORIGINAL) selectMode(TranslationMode.SPANISH)
+                                },
+                                modifier = Modifier.semantics { contentDescription = "Traducción automática" },
+                            )
+                        }
+                        Text("Con Español o Bilingüe, traduce las canciones nuevas mientras ves Letras. Envía la letra a Google y usa tu cuota.",
+                            style = MaterialTheme.typography.bodySmall)
                         TextButton(enabled = !busy, onClick = {
                             showSettings = !showSettings
                             if (!showSettings) { enteredKey = ""; enteredModel = model }
@@ -154,19 +225,7 @@ fun LyricsView(
                     TextButton(enabled = !busy && !cacheLoading && hasKey && !showSettings,
                         onClick = {
                             val refresh = translated != null
-                            busy = true; message = null
-                            scope.launch {
-                                try {
-                                    val result = store.translate(lyrics, model, refresh)
-                                    translated = result.lines
-                                    if (preferredMode == TranslationMode.ORIGINAL) selectMode(TranslationMode.SPANISH)
-                                    message = if (result.saved) "Traducción guardada. Cambiar de modo no usa cuota."
-                                        else "Traducción lista, pero no se pudo guardar en el dispositivo."
-                                } catch (e: CancellationException) { throw e }
-                                catch (e: TranslationFailure) { message = e.userMessage }
-                                catch (_: Exception) { message = "No se pudo completar la traducción." }
-                                finally { busy = false }
-                            }
+                            scope.launch { requestTranslation(lyrics, refresh) }
                         }) { Text(if (busy) "Traduciendo…" else if (translated != null) "Volver a traducir" else "Traducir al español") }
                 },
                 dismissButton = { TextButton(onClick = { dialog = false }) { Text("Cerrar") } },

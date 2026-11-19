@@ -989,6 +989,7 @@ fun PlayerLayout(
                                     playing = lyricsPlaying,
                                     seeks = lyricsSeeks,
                                     controlsVisible = !controlsHidden,
+                                    lyricsVisible = pane == Pane.COVER,
                                 )
                             } else if (p == Pane.COVER) {
                                 val seekBy: (Long) -> Unit = { d -> actions.seekTo((position() + d).coerceIn(0L, state.durationMs.coerceAtLeast(0L))) }
@@ -1129,6 +1130,7 @@ fun PlayerLayout(
                                                     playing = lyricsPlaying,
                                                     seeks = lyricsSeeks,
                                                     controlsVisible = !controlsHidden,
+                                                    lyricsVisible = pane == Pane.LYRICS,
                                                 )
                                             } else {
                                                 Text(com.opentune.ui.theme.tr("Queue"), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp))

@@ -25,7 +25,7 @@ import com.opentune.data.model.artworkAt
 
 sealed interface LyricsState {
     data object Loading : LyricsState
-    data class Found(val lyrics: Lyrics) : LyricsState
+    data class Found(val lyrics: Lyrics, val songId: String? = null) : LyricsState
     data object NotFound : LyricsState
 }
 
@@ -209,7 +209,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             // Plain text often means a synced source was busy just then; the
             // repository asks again a little later and sends better lyrics on.
             LyricsRepository.lyricsUpdates(song.videoId, song.title, song.artist, duration).collect { found ->
-                _lyrics.value = found?.let(LyricsState::Found) ?: LyricsState.NotFound
+                _lyrics.value = found?.let { LyricsState.Found(it, song.videoId) } ?: LyricsState.NotFound
             }
         }
     }
