@@ -1,3 +1,7 @@
+> **OpenTune Gemini · unofficial Android fork**
+>
+> The original [OpenTune](https://github.com/justshivv/Opentune) was created by **Shivam ([@justshivv](https://github.com/justshivv))** and developed with its contributors. This fork keeps their history, attribution, [GPL-3.0 license](LICENSE), and [third-party notices](THIRD_PARTY_NOTICES.md). Our changes add optional synchronized Spanish lyric translation with Gemini and an ARM64 test build. See the [translation and build guide](docs/gemini-lyrics-es.md). Official OpenTune downloads are linked in the original README below.
+
 <p align="center">
   <img src="docs/banner.jpg" alt="OpenTune: a free, open-source music player for Android, built on YouTube Music" width="100%">
 </p>
